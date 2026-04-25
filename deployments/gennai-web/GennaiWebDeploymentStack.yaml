@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Gennai AI Web Interface (源内Web) - One Click Deployment'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "通知設定"
+        Parameters:
+          - NotificationEmailAddress
+      - Label:
+          default: "認証設定"
+        Parameters:
+          - SelfSignUp
+          - AllowedSignUpEmailDomains
+      - Label:
+          default: "セキュリティ設定"
+        Parameters:
+          - AllowedIpV4AddressRanges
+          - AllowedIpV6AddressRanges
+
+Parameters:
+  NotificationEmailAddress:
+    Type: String
+    Description: 'デプロイ完了通知を受け取るメールアドレス（例: user@example.com）'
+    AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    ConstraintDescription: 有効なメールアドレスを入力してください
+
+  SelfSignUp:
+    Type: String
+    AllowedValues: [true, false]
+    Default: true
+    Description: 'セルフサインアップを有効にする（注意: 公開アクセスを許可する場合は慎重に検討してください）'
+
+  AllowedSignUpEmailDomains:
+    Type: String
+    Default: ""
+    Description: 'サインアップを許可するメールドメイン（@なし、カンマ区切り。例: gmail.com, example.co.jp）'
+
+  AllowedIpV4AddressRanges:
+    Type: String
+    Default: "0.0.0.0/1,128.0.0.0/1"
+    Description: 'アクセスを許可するIPv4アドレス範囲（例: 203.0.113.0/24）。現在のIPはこちらで確認: https://checkip.amazonaws.com/'
+
+  AllowedIpV6AddressRanges:
+    Type: String
+    Default: "0000:0000:0000:0000:0000:0000:0000:0000/1,8000:0000:0000:0000:0000:0000:0000:0000/1"
+    Description: 'アクセスを許可するIPv6アドレス範囲'
+
+Resources:
+
+  DeploymentNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub '源内Web デプロイ通知'
+      TopicName: !Sub 'Notification-for-${AWS::StackName}'
+      KmsMasterKeyId: 'alias/aws/sns'
+
+  DeploymentNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref DeploymentNotificationTopic
+      Endpoint: !Ref NotificationEmailAddress
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"
+
+  CodeBuildServiceRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeBuildServiceRolePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${GennaiWebDeploymentProject}:*"
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${GennaiWebDeploymentProject}"
+          - Action:
+              - sns:Publish
+            Effect: Allow
+            Resource: !Ref DeploymentNotificationTopic
+      Roles:
+        - !Ref CodeBuildServiceRole
+
+  GennaiWebDeploymentProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub 'CodeBuild-for-${AWS::StackName}'
+      Description: '源内Web（AIインターフェース）をデプロイ'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: SelfSignUp
+            Value: !Ref SelfSignUp
+          - Name: AllowedSignUpEmailDomains
+            Value: !Ref AllowedSignUpEmailDomains
+          - Name: AllowedIpV4AddressRanges
+            Value: !Ref AllowedIpV4AddressRanges
+          - Name: AllowedIpV6AddressRanges
+            Value: !Ref AllowedIpV6AddressRanges
+          - Name: SNSTopicArn
+            Value: !Ref DeploymentNotificationTopic
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+              commands:
+                - echo "=== 源内Web デプロイ開始 ==="
+                - aws sns publish --topic-arn ${SNSTopicArn} --subject "源内Web デプロイ開始" --message "源内Web（AIインターフェース）のデプロイを開始しました。完了後にメールで通知します。"
+                - git clone https://github.com/digital-go-jp/genai-web.git
+                - cd genai-web && npm ci
+
+            pre_build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR/genai-web
+
+                # parameter.tsに環境設定を注入
+                - |
+                  cat > packages/cdk/env-parameters/one-click-deploy.ts << 'PARAMEOF'
+                  import { StackInput } from '../lib/stack-input';
+
+                  export const oneClickDeployParams: Partial<StackInput> = {
+                    appEnv: 'prod',
+                    logLevel: 'INFO',
+                    selfSignUpEnabled: process.env.SelfSignUp === 'true',
+                    allowedIpV4AddressRanges: process.env.AllowedIpV4AddressRanges
+                      ? process.env.AllowedIpV4AddressRanges.split(',').map((r: string) => r.trim())
+                      : null,
+                    allowedIpV6AddressRanges: process.env.AllowedIpV6AddressRanges
+                      ? process.env.AllowedIpV6AddressRanges.split(',').map((r: string) => r.trim())
+                      : null,
+                    modelRegion: 'ap-northeast-1',
+                    modelIds: [
+                      'jp.anthropic.claude-sonnet-4-5-20250929-v1:0',
+                      'amazon.nova-lite-v1:0',
+                      'jp.anthropic.claude-haiku-4-5-20251001-v1:0',
+                    ],
+                    imageGenerationModelIds: ['amazon.nova-canvas-v1:0'],
+                    monitoring: true,
+                  };
+                  PARAMEOF
+
+                # parameter.tsを更新
+                - |
+                  cat > update-parameter.js << 'EOF'
+                  const fs = require('fs');
+                  const paramPath = 'packages/cdk/parameter.ts';
+                  let content = fs.readFileSync(paramPath, 'utf8');
+
+                  // import文を追加
+                  const importLine = "import { oneClickDeployParams } from './env-parameters/one-click-deploy';\n";
+                  content = importLine + content;
+
+                  // deploy_envsにエントリを追加
+                  content = content.replace(
+                    /const deploy_envs: Record<string, Partial<StackInput>> = \{/,
+                    "const deploy_envs: Record<string, Partial<StackInput>> = {\n  '-prod': oneClickDeployParams,"
+                  );
+
+                  fs.writeFileSync(paramPath, content);
+                  console.log('Updated parameter.ts');
+                  EOF
+
+                  node update-parameter.js
+
+                # allowedSignUpEmailDomainsの設定
+                - |
+                  if [ -n "${AllowedSignUpEmailDomains}" ]; then
+                    cat > update-email-domains.js << 'EOF'
+                  const fs = require('fs');
+                  const paramPath = 'packages/cdk/env-parameters/one-click-deploy.ts';
+                  let content = fs.readFileSync(paramPath, 'utf8');
+                  const domains = process.env.AllowedSignUpEmailDomains.split(',').map(d => d.trim()).filter(d => d);
+                  if (domains.length > 0) {
+                    const domainsStr = domains.map(d => `'${d}'`).join(', ');
+                    content = content.replace(
+                      'monitoring: true,',
+                      `allowedSignUpEmailDomains: [${domainsStr}],\n    monitoring: true,`
+                    );
+                    fs.writeFileSync(paramPath, content);
+                    console.log('Added email domains:', domains);
+                  }
+                  EOF
+                    node update-email-domains.js
+                  fi
+
+            build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR/genai-web
+
+                # CDK Bootstrap（必要な場合のみ）
+                - |
+                  BOOTSTRAP_STACK_NAME="CDKToolkit"
+                  BOOTSTRAP_EXISTS=$(aws cloudformation describe-stacks --stack-name $BOOTSTRAP_STACK_NAME 2>&1 || echo "NOT_EXISTS")
+                  if echo "$BOOTSTRAP_EXISTS" | grep -q "does not exist"; then
+                    echo "Running CDK bootstrap..."
+                    npm -w packages/cdk run cdk -- bootstrap
+                  else
+                    echo "CDK bootstrap already exists, skipping..."
+                  fi
+
+                # デプロイ実行
+                - npm -w packages/cdk run cdk -- deploy --all --require-approval never -c env=-prod
+
+                # デプロイ情報を取得
+                - |
+                  STACK_NAME="GenerativeAiUseCasesStack-prod"
+                  WEB_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='WebUrl'].OutputValue" --output text 2>/dev/null || echo "取得失敗")
+                  USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text 2>/dev/null || echo "取得失敗")
+                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+                  cat << EOF > $CODEBUILD_SRC_DIR/deployment-info.txt
+                  ============================================
+                  源内Web デプロイ完了
+                  ============================================
+                  デプロイ日時: $(date '+%Y-%m-%d %H:%M:%S')
+
+                  アプリケーションURL: ${WEB_URL}
+
+                  次のステップ:
+                  1. Amazon Bedrockのモデルアクセスを有効化してください:
+                     https://${AWS_ACCOUNT_ID}.${AWS_DEFAULT_REGION}.console.aws.amazon.com/bedrock/home?region=${AWS_DEFAULT_REGION}#/modelaccess
+                     必要なモデル: Claude Sonnet 4.5, Claude Haiku 4.5, Nova Lite, Nova Canvas
+
+                  2. セルフサインアップが無効の場合、Cognitoでユーザーを作成してください:
+                     https://${AWS_ACCOUNT_ID}.${AWS_DEFAULT_REGION}.console.aws.amazon.com/cognito/v2/idp/user-pools/${USER_POOL_ID}/user-management/users?region=${AWS_DEFAULT_REGION}
+
+                  設定:
+                  セルフサインアップ: ${SelfSignUp}
+                  許可メールドメイン: ${AllowedSignUpEmailDomains}
+                  IPv4制限: ${AllowedIpV4AddressRanges}
+                  リージョン: ${AWS_DEFAULT_REGION}
+                  EOF
+
+            post_build:
+              commands:
+                - aws sns publish --topic-arn "${SNSTopicArn}" --subject "源内Web デプロイ完了" --message file://$CODEBUILD_SRC_DIR/deployment-info.txt
+                - rm -rf $CODEBUILD_SRC_DIR/genai-web
+
+          artifacts:
+            files:
+              - deployment-info.txt
+      TimeoutInMinutes: 60
+
+  DeploymentTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt TriggerFunction.Arn
+      ProjectName: !Ref GennaiWebDeploymentProject
+      ServiceTimeout: 600
+
+  TriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt TriggerFunctionRole.Arn
+      Runtime: nodejs20.x
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const { CodeBuildClient, StartBuildCommand } = require('@aws-sdk/client-codebuild');
+          const response = require('cfn-response');
+
+          exports.handler = async (event, context) => {
+            console.log('Event:', JSON.stringify(event, null, 2));
+            const physicalResourceId = `CodeBuildTrigger-${event.ResourceProperties.ProjectName}`;
+            const responseData = {};
+            try {
+              const codebuild = new CodeBuildClient({ region: process.env.AWS_REGION, maxAttempts: 3 });
+              if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+                const command = new StartBuildCommand({ projectName: event.ResourceProperties.ProjectName });
+                const result = await codebuild.send(command);
+                responseData.BuildId = result.build.id;
+              }
+              await response.send(event, context, response.SUCCESS, responseData, physicalResourceId);
+            } catch (error) {
+              console.error('Error:', error);
+              await response.send(event, context, response.FAILED, { Error: error.message }, physicalResourceId);
+            }
+          };
+
+  TriggerFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: CodeBuildStartPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codebuild:StartBuild
+                Resource: !GetAtt GennaiWebDeploymentProject.Arn
+
+Outputs:
+  NotificationTopicArn:
+    Description: デプロイ通知SNSトピックARN
+    Value: !Ref DeploymentNotificationTopic
+
+  CodeBuildProjectName:
+    Description: CodeBuildプロジェクト名
+    Value: !Ref GennaiWebDeploymentProject
+
+  CodeBuildLogGroup:
+    Description: CodeBuildログ
+    Value: !Sub '/aws/codebuild/${GennaiWebDeploymentProject}'
+
+  DeploymentStatus:
+    Description: デプロイ状況
+    Value: !Sub "${NotificationEmailAddress} にデプロイ完了通知が送信されます。"

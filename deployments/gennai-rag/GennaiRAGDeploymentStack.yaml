@@ -1,0 +1,337 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Gennai AI Query Expansion RAG API - One Click Deployment'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "通知設定"
+        Parameters:
+          - NotificationEmailAddress
+      - Label:
+          default: "セキュリティ設定"
+        Parameters:
+          - AllowedIpV4AddressRanges
+
+Parameters:
+  NotificationEmailAddress:
+    Type: String
+    Description: 'デプロイ完了通知を受け取るメールアドレス（例: user@example.com）'
+    AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    ConstraintDescription: 有効なメールアドレスを入力してください
+
+  AllowedIpV4AddressRanges:
+    Type: String
+    Default: "0.0.0.0/1,128.0.0.0/1"
+    Description: 'RAG APIへのアクセスを許可するIPv4アドレス範囲（カンマ区切り）。源内WebのNAT Gateway IPと自分のIPを指定してください。現在のIPはこちらで確認: https://checkip.amazonaws.com/'
+
+Resources:
+
+  DeploymentNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub '源内RAG デプロイ通知'
+      TopicName: !Sub 'Notification-for-${AWS::StackName}'
+      KmsMasterKeyId: 'alias/aws/sns'
+
+  DeploymentNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref DeploymentNotificationTopic
+      Endpoint: !Ref NotificationEmailAddress
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"
+
+  CodeBuildServiceRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeBuildServiceRolePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${GennaiRAGDeploymentProject}:*"
+              - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${GennaiRAGDeploymentProject}"
+          - Action:
+              - sns:Publish
+            Effect: Allow
+            Resource: !Ref DeploymentNotificationTopic
+      Roles:
+        - !Ref CodeBuildServiceRole
+
+  GennaiRAGDeploymentProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub 'CodeBuild-for-${AWS::StackName}'
+      Description: '源内AI Query Expansion RAG APIをデプロイ'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AllowedIpV4AddressRanges
+            Value: !Ref AllowedIpV4AddressRanges
+          - Name: SNSTopicArn
+            Value: !Ref DeploymentNotificationTopic
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+                python: 3.12
+              commands:
+                - echo "=== 源内RAG API デプロイ開始 ==="
+                - aws sns publish --topic-arn ${SNSTopicArn} --subject "源内RAG API デプロイ開始" --message "Query Expansion RAG APIのデプロイを開始しました。OpenSearch Serverlessの作成に30分以上かかります。完了後にメールで通知します。"
+                - git clone https://github.com/digital-go-jp/genai-ai-api.git
+                - cd genai-ai-api/aws/query-expansion-rag && npm ci
+
+            pre_build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR/genai-ai-api/aws/query-expansion-rag
+
+                # parameter.tsを更新（IP制限設定、SwitchRole修正）
+                - |
+                  cat > update-params.js << 'EOF'
+                  const fs = require('fs');
+
+                  // parameter.tsのIP制限を更新
+                  const paramPath = 'parameter.ts';
+                  let content = fs.readFileSync(paramPath, 'utf8');
+
+                  const ipRanges = process.env.AllowedIpV4AddressRanges
+                    ? process.env.AllowedIpV4AddressRanges.split(',').map(r => `      "${r.trim()}"`)
+                    : ['      "0.0.0.0/1"', '      "128.0.0.0/1"'];
+
+                  content = content.replace(
+                    /allowedIpV4AddressRanges: \[[\s\S]*?\]/,
+                    `allowedIpV4AddressRanges: [\n${ipRanges.join(',\n')}\n    ]`
+                  );
+
+                  fs.writeFileSync(paramPath, content);
+                  console.log('Updated parameter.ts with IP ranges');
+
+                  // cdk.jsonのapiLambdaIntegrationTimeoutを29秒に修正
+                  const cdkJsonPath = 'cdk.json';
+                  const cdkJson = JSON.parse(fs.readFileSync(cdkJsonPath, 'utf8'));
+                  cdkJson.context.apiLambdaIntegrationTimeout = 29;
+                  fs.writeFileSync(cdkJsonPath, JSON.stringify(cdkJson, null, 2));
+                  console.log('Updated cdk.json apiLambdaIntegrationTimeout to 29');
+                  EOF
+
+                  node update-params.js
+
+                # SwitchRoleスタックのDummyRole問題を修正
+                - |
+                  cat > fix-switch-role.js << 'EOF'
+                  const fs = require('fs');
+
+                  // bin/qe-rag-apis.tsのバリデーションを緩和
+                  const binPath = 'bin/qe-rag-apis.ts';
+                  let binContent = fs.readFileSync(binPath, 'utf8');
+                  binContent = binContent.replace(
+                    /throw new Error\("idcUserNames and switchRoleName must be set in cdk\.json"\);/,
+                    'console.warn("WARNING: idcUserNames or switchRoleName not properly set.");'
+                  );
+                  fs.writeFileSync(binPath, binContent);
+
+                  // lib/switch-role-stack.tsでDummyRoleの場合はAccountRootPrincipalを使用
+                  const switchRolePath = 'lib/switch-role-stack.ts';
+                  let switchContent = fs.readFileSync(switchRolePath, 'utf8');
+                  switchContent = switchContent.replace(
+                    /\/\/ Build assume role principal with SSO conditions\s*\n\s*const assumeRolePrincipal = new iam\.ArnPrincipal\(\s*`arn:aws:iam::.*?\)\.withConditions\(\{[\s\S]*?\}\);/,
+                    `// Build assume role principal
+    let assumeRolePrincipal: iam.IPrincipal;
+    if (!props.switchRoleName || props.switchRoleName === 'DummyRole') {
+      assumeRolePrincipal = new iam.AccountRootPrincipal();
+    } else {
+      assumeRolePrincipal = new iam.ArnPrincipal(
+        \`arn:aws:iam::\${awsAccount}:role/aws-reserved/sso.amazonaws.com/\${awsRegion}/\${props.switchRoleName}\`
+      ).withConditions({
+        StringLike: {
+          'aws:userid': props.idcUserNames.map((user) => \`*:\${user}\`),
+        },
+      });
+    }`
+                  );
+                  fs.writeFileSync(switchRolePath, switchContent);
+                  console.log('Fixed switch-role-stack.ts for non-SSO environments');
+                  EOF
+
+                  node fix-switch-role.js
+
+            build:
+              commands:
+                - cd $CODEBUILD_SRC_DIR/genai-ai-api/aws/query-expansion-rag
+
+                # CDK Bootstrap（必要な場合のみ）
+                - |
+                  BOOTSTRAP_STACK_NAME="CDKToolkit"
+                  BOOTSTRAP_EXISTS=$(aws cloudformation describe-stacks --stack-name $BOOTSTRAP_STACK_NAME 2>&1 || echo "NOT_EXISTS")
+                  if echo "$BOOTSTRAP_EXISTS" | grep -q "does not exist"; then
+                    echo "Running CDK bootstrap..."
+                    npx cdk bootstrap
+                  else
+                    echo "CDK bootstrap already exists, skipping..."
+                  fi
+
+                # デプロイ実行
+                - npx cdk deploy --all -c env=-dev --require-approval never
+
+                # デプロイ情報を取得
+                - |
+                  API_STACK_NAME="qerag-shared-1-qeRagApi"
+                  KB_STACK_NAME="qerag-shared-1-qeRagKB"
+
+                  API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $API_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null || echo "取得失敗")
+                  API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $API_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null || echo "取得失敗")
+                  API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query value --output text 2>/dev/null || echo "取得失敗")
+                  KB_ID=$(aws cloudformation describe-stacks --stack-name $KB_STACK_NAME --query "Stacks[0].Outputs[0].OutputValue" --output text 2>/dev/null || echo "取得失敗")
+
+                  # データソースS3バケット名を取得
+                  DS_BUCKET=$(aws cloudformation list-stack-resources --stack-name $KB_STACK_NAME --query "StackResourceSummaries[?LogicalResourceId=='qeragshared1DataSourceBucket5958ACF9'].PhysicalResourceId" --output text 2>/dev/null || echo "取得失敗")
+
+                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+                  cat << EOF > $CODEBUILD_SRC_DIR/deployment-info.txt
+                  ============================================
+                  源内RAG API デプロイ完了
+                  ============================================
+                  デプロイ日時: $(date '+%Y-%m-%d %H:%M:%S')
+
+                  API情報:
+                  APIエンドポイント: ${API_ENDPOINT}
+                  APIキーID: ${API_KEY_ID}
+                  APIキー値: ${API_KEY_VALUE}
+                  Knowledge Base ID: ${KB_ID}
+                  データソースS3バケット: ${DS_BUCKET}
+
+                  次のステップ:
+                  1. データソースS3バケットの docs/ フォルダにPDFなどのドキュメントをアップロード:
+                     aws s3 cp your-document.pdf s3://${DS_BUCKET}/docs/
+
+                  2. Knowledge Baseを同期:
+                     https://${AWS_ACCOUNT_ID}.${AWS_DEFAULT_REGION}.console.aws.amazon.com/bedrock/home?region=${AWS_DEFAULT_REGION}#/knowledge-bases/${KB_ID}
+
+                  3. 源内WebにAIアプリとして登録:
+                     - APIエンドポイント: ${API_ENDPOINT}
+                     - APIキー: ${API_KEY_VALUE}
+
+                  注意:
+                  - OpenSearch Serverlessは最低2 OCU（約350ドル/月）のコストが発生します
+                  - 検証後は速やかに削除してください
+
+                  リージョン: ${AWS_DEFAULT_REGION}
+                  EOF
+
+            post_build:
+              commands:
+                - aws sns publish --topic-arn "${SNSTopicArn}" --subject "源内RAG API デプロイ完了" --message file://$CODEBUILD_SRC_DIR/deployment-info.txt
+                - rm -rf $CODEBUILD_SRC_DIR/genai-ai-api
+
+          artifacts:
+            files:
+              - deployment-info.txt
+      TimeoutInMinutes: 120
+
+  DeploymentTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt TriggerFunction.Arn
+      ProjectName: !Ref GennaiRAGDeploymentProject
+      ServiceTimeout: 600
+
+  TriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt TriggerFunctionRole.Arn
+      Runtime: nodejs20.x
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const { CodeBuildClient, StartBuildCommand } = require('@aws-sdk/client-codebuild');
+          const response = require('cfn-response');
+
+          exports.handler = async (event, context) => {
+            console.log('Event:', JSON.stringify(event, null, 2));
+            const physicalResourceId = `CodeBuildTrigger-${event.ResourceProperties.ProjectName}`;
+            const responseData = {};
+            try {
+              const codebuild = new CodeBuildClient({ region: process.env.AWS_REGION, maxAttempts: 3 });
+              if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+                const command = new StartBuildCommand({ projectName: event.ResourceProperties.ProjectName });
+                const result = await codebuild.send(command);
+                responseData.BuildId = result.build.id;
+              }
+              await response.send(event, context, response.SUCCESS, responseData, physicalResourceId);
+            } catch (error) {
+              console.error('Error:', error);
+              await response.send(event, context, response.FAILED, { Error: error.message }, physicalResourceId);
+            }
+          };
+
+  TriggerFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: CodeBuildStartPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codebuild:StartBuild
+                Resource: !GetAtt GennaiRAGDeploymentProject.Arn
+
+Outputs:
+  NotificationTopicArn:
+    Description: デプロイ通知SNSトピックARN
+    Value: !Ref DeploymentNotificationTopic
+
+  CodeBuildProjectName:
+    Description: CodeBuildプロジェクト名
+    Value: !Ref GennaiRAGDeploymentProject
+
+  CodeBuildLogGroup:
+    Description: CodeBuildログ
+    Value: !Sub '/aws/codebuild/${GennaiRAGDeploymentProject}'
+
+  DeploymentStatus:
+    Description: デプロイ状況
+    Value: !Sub "${NotificationEmailAddress} にデプロイ完了通知が送信されます。"
