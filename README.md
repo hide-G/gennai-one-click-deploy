@@ -8,17 +8,13 @@
 
 GenU（Generative AI Use Cases）ベースのWebアプリケーション。チャット、文章生成、翻訳、画像生成などの汎用AI機能を提供します。
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://ap-northeast-1.console.aws.amazon.com/cloudformation/home?region=ap-northeast-1#/stacks/create/review?templateURL=https://s3.ap-northeast-1.amazonaws.com/YOUR_BUCKET/gennai-web-deployment.yaml&stackName=GennaiWeb)
-
-> ⚠️ テンプレートをS3にアップロード後、上記URLの `YOUR_BUCKET` を実際のバケット名に置き換えてください。
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://ap-northeast-1.console.aws.amazon.com/cloudformation/home?region=ap-northeast-1#/stacks/create/review?templateURL=https://s3.ap-northeast-1.amazonaws.com/gennai-one-click-deploy/gennai-web-deployment.yaml&stackName=GennaiWeb)
 
 ### 2. Query Expansion RAG API
 
 Bedrock Knowledge Base + OpenSearch Serverlessを使ったクエリ拡張RAG APIテンプレート。源内Webの行政実務用AIアプリとして登録可能です。
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://ap-northeast-1.console.aws.amazon.com/cloudformation/home?region=ap-northeast-1#/stacks/create/review?templateURL=https://s3.ap-northeast-1.amazonaws.com/YOUR_BUCKET/gennai-rag-deployment.yaml&stackName=GennaiRAG)
-
-> ⚠️ テンプレートをS3にアップロード後、上記URLの `YOUR_BUCKET` を実際のバケット名に置き換えてください。
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://ap-northeast-1.console.aws.amazon.com/cloudformation/home?region=ap-northeast-1#/stacks/create/review?templateURL=https://s3.ap-northeast-1.amazonaws.com/gennai-one-click-deploy/gennai-rag-deployment.yaml&stackName=GennaiRAG)
 
 ## 前提条件
 
