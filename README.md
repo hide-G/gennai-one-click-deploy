@@ -56,6 +56,13 @@ Bedrock Knowledge Base + OpenSearch Serverlessを使ったクエリ拡張RAG API
 - [源内AIアプリ（genai-ai-api）](https://github.com/digital-go-jp/genai-ai-api)
 - [デジタル庁 プロジェクト「源内」構想紹介](https://digital-gov.note.jp/)
 
+## CloudFormation Quick Create Link について
+
+このリポジトリの「Launch Stack」ボタンは、AWS CloudFormation Quick Create Link（1-Click Deploy）の仕組みを利用しています。S3に配置したCloudFormationテンプレートのURLをパラメータとして埋め込むことで、ユーザーがボタン1つでスタック作成画面に遷移できます。
+
+詳細については、AWS公式ドキュメントをご参照ください：
+- [クイック作成リンクを使用したスタックの作成](https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/UserGuide/cfn-console-create-stacks-quick-create-links.html)
+
 ## ライセンス
 
 このリポジトリのテンプレートはMITライセンスです。

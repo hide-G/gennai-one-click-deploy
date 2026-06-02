@@ -1,20 +1,20 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Gennai AI Web Interface (源内Web) - One Click Deployment'
+Description: 'Gennai AI Web Interface (Gennai Web) - One Click Deployment'
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: "通知設定"
+          default: "Notification Settings"
         Parameters:
           - NotificationEmailAddress
       - Label:
-          default: "認証設定"
+          default: "Authentication Settings"
         Parameters:
           - SelfSignUp
           - AllowedSignUpEmailDomains
       - Label:
-          default: "セキュリティ設定"
+          default: "Security Settings"
         Parameters:
           - AllowedIpV4AddressRanges
           - AllowedIpV6AddressRanges
@@ -22,30 +22,30 @@ Metadata:
 Parameters:
   NotificationEmailAddress:
     Type: String
-    Description: 'デプロイ完了通知を受け取るメールアドレス（例: user@example.com）'
+    Description: 'Email address for deployment notifications (e.g. user@example.com)'
     AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-    ConstraintDescription: 有効なメールアドレスを入力してください
+    ConstraintDescription: Please enter a valid email address
 
   SelfSignUp:
     Type: String
     AllowedValues: [true, false]
     Default: true
-    Description: 'セルフサインアップを有効にする（注意: 公開アクセスを許可する場合は慎重に検討してください）'
+    Description: 'Enable self sign-up. If true, anyone can create an account.'
 
   AllowedSignUpEmailDomains:
     Type: String
     Default: ""
-    Description: 'サインアップを許可するメールドメイン（@なし、カンマ区切り。例: gmail.com, example.co.jp）'
+    Description: 'Allowed email domains for sign-up (without @, comma-separated. e.g. gmail.com, example.co.jp)'
 
   AllowedIpV4AddressRanges:
     Type: String
     Default: "0.0.0.0/1,128.0.0.0/1"
-    Description: 'アクセスを許可するIPv4アドレス範囲（例: 203.0.113.0/24）。現在のIPはこちらで確認: https://checkip.amazonaws.com/'
+    Description: 'Allowed IPv4 address ranges (e.g. 203.0.113.0/24). Check your IP: https://checkip.amazonaws.com/'
 
   AllowedIpV6AddressRanges:
     Type: String
     Default: "0000:0000:0000:0000:0000:0000:0000:0000/1,8000:0000:0000:0000:0000:0000:0000:0000/1"
-    Description: 'アクセスを許可するIPv6アドレス範囲'
+    Description: 'Allowed IPv6 address ranges'
 
 Resources:
 

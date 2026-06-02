@@ -5,25 +5,25 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: "通知設定"
+          default: "Notification Settings"
         Parameters:
           - NotificationEmailAddress
       - Label:
-          default: "セキュリティ設定"
+          default: "Security Settings"
         Parameters:
           - AllowedIpV4AddressRanges
 
 Parameters:
   NotificationEmailAddress:
     Type: String
-    Description: 'デプロイ完了通知を受け取るメールアドレス（例: user@example.com）'
+    Description: 'Email address for deployment notifications (e.g. user@example.com)'
     AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-    ConstraintDescription: 有効なメールアドレスを入力してください
+    ConstraintDescription: Please enter a valid email address
 
   AllowedIpV4AddressRanges:
     Type: String
     Default: "0.0.0.0/1,128.0.0.0/1"
-    Description: 'RAG APIへのアクセスを許可するIPv4アドレス範囲（カンマ区切り）。源内WebのNAT Gateway IPと自分のIPを指定してください。現在のIPはこちらで確認: https://checkip.amazonaws.com/'
+    Description: 'Allowed IPv4 address ranges for RAG API access (comma-separated). Specify NAT Gateway IP of Gennai Web and your IP. Check your IP: https://checkip.amazonaws.com/'
 
 Resources:
 
@@ -165,21 +165,26 @@ Resources:
                   // lib/switch-role-stack.tsでDummyRoleの場合はAccountRootPrincipalを使用
                   const switchRolePath = 'lib/switch-role-stack.ts';
                   let switchContent = fs.readFileSync(switchRolePath, 'utf8');
+
+                  const replacementCode = [
+                    '// Build assume role principal',
+                    '    let assumeRolePrincipal: iam.IPrincipal;',
+                    '    if (!props.switchRoleName || props.switchRoleName === \'DummyRole\') {',
+                    '      assumeRolePrincipal = new iam.AccountRootPrincipal();',
+                    '    } else {',
+                    '      assumeRolePrincipal = new iam.ArnPrincipal(',
+                    '        `arn:aws:iam::${awsAccount}:role/aws-reserved/sso.amazonaws.com/${awsRegion}/${props.switchRoleName}`',
+                    '      ).withConditions({',
+                    '        StringLike: {',
+                    '          \'aws:userid\': props.idcUserNames.map((user) => `*:${user}`),',
+                    '        },',
+                    '      });',
+                    '    }',
+                  ].join('\n');
+
                   switchContent = switchContent.replace(
                     /\/\/ Build assume role principal with SSO conditions\s*\n\s*const assumeRolePrincipal = new iam\.ArnPrincipal\(\s*`arn:aws:iam::.*?\)\.withConditions\(\{[\s\S]*?\}\);/,
-                    `// Build assume role principal
-    let assumeRolePrincipal: iam.IPrincipal;
-    if (!props.switchRoleName || props.switchRoleName === 'DummyRole') {
-      assumeRolePrincipal = new iam.AccountRootPrincipal();
-    } else {
-      assumeRolePrincipal = new iam.ArnPrincipal(
-        \`arn:aws:iam::\${awsAccount}:role/aws-reserved/sso.amazonaws.com/\${awsRegion}/\${props.switchRoleName}\`
-      ).withConditions({
-        StringLike: {
-          'aws:userid': props.idcUserNames.map((user) => \`*:\${user}\`),
-        },
-      });
-    }`
+                    replacementCode
                   );
                   fs.writeFileSync(switchRolePath, switchContent);
                   console.log('Fixed switch-role-stack.ts for non-SSO environments');
