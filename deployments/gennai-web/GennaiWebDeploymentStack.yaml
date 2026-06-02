@@ -255,10 +255,20 @@ Resources:
                   2. セルフサインアップが無効の場合、Cognitoでユーザーを作成してください:
                      https://${AWS_ACCOUNT_ID}.${AWS_DEFAULT_REGION}.console.aws.amazon.com/cognito/v2/idp/user-pools/${USER_POOL_ID}/user-management/users?region=${AWS_DEFAULT_REGION}
 
+                  3. 管理者への昇格（システム管理者の設定）:
+                     サインアップ完了後、AWS CloudShellで以下のコマンドを実行してください。
+                     CloudShellはAWSマネジメントコンソール右上の [>_] アイコンから起動できます。
+
+                     aws cognito-idp admin-add-user-to-group --user-pool-id ${USER_POOL_ID} --username <サインアップしたメールアドレス> --group-name SystemAdminGroup --region ${AWS_DEFAULT_REGION}
+
+                     実行後、源内Webに再ログインすると「チーム管理」メニューが表示されます。
+                     チーム管理から、チームの作成やAIアプリの登録が可能になります。
+
                   設定:
                   セルフサインアップ: ${SelfSignUp}
                   許可メールドメイン: ${AllowedSignUpEmailDomains}
                   IPv4制限: ${AllowedIpV4AddressRanges}
+                  ユーザープールID: ${USER_POOL_ID}
                   リージョン: ${AWS_DEFAULT_REGION}
                   EOF
 
