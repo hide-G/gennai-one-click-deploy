@@ -166,28 +166,55 @@ Resources:
                   const switchRolePath = 'lib/switch-role-stack.ts';
                   let switchContent = fs.readFileSync(switchRolePath, 'utf8');
 
-                  const replacementCode = [
-                    '// Build assume role principal',
-                    '    let assumeRolePrincipal: iam.IPrincipal;',
-                    '    if (!props.switchRoleName || props.switchRoleName === \'DummyRole\') {',
-                    '      assumeRolePrincipal = new iam.AccountRootPrincipal();',
-                    '    } else {',
-                    '      assumeRolePrincipal = new iam.ArnPrincipal(',
-                    '        `arn:aws:iam::${awsAccount}:role/aws-reserved/sso.amazonaws.com/${awsRegion}/${props.switchRoleName}`',
-                    '      ).withConditions({',
-                    '        StringLike: {',
-                    '          \'aws:userid\': props.idcUserNames.map((user) => `*:${user}`),',
-                    '        },',
-                    '      });',
-                    '    }',
-                  ].join('\n');
+                  // 方法1: 行ベースで置換（コメント行を目印にする）
+                  const lines = switchContent.split('\n');
+                  const startIdx = lines.findIndex(l => l.includes('// Build assume role principal with SSO conditions'));
+                  if (startIdx === -1) {
+                    console.error('ERROR: Could not find target comment in switch-role-stack.ts');
+                    console.log('File content (first 2000 chars):', switchContent.substring(0, 2000));
+                    process.exit(1);
+                  }
 
-                  switchContent = switchContent.replace(
-                    /\/\/ Build assume role principal with SSO conditions\s*\n\s*const assumeRolePrincipal = new iam\.ArnPrincipal\(\s*`arn:aws:iam::.*?\)\.withConditions\(\{[\s\S]*?\}\);/,
-                    replacementCode
-                  );
+                  // 閉じの });  を探す（assumeRolePrincipal の定義終了）
+                  let endIdx = startIdx + 1;
+                  let braceDepth = 0;
+                  let foundStart = false;
+                  for (let i = startIdx + 1; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (line.includes('withConditions(')) foundStart = true;
+                    if (foundStart) {
+                      for (const ch of line) {
+                        if (ch === '{') braceDepth++;
+                        if (ch === '}') braceDepth--;
+                      }
+                      if (braceDepth <= 0 && line.includes('});')) {
+                        endIdx = i;
+                        break;
+                      }
+                    }
+                  }
+
+                  const indent = lines[startIdx].match(/^\s*/)[0];
+                  const replacement = [
+                    indent + '// Build assume role principal - patched for non-SSO environments',
+                    indent + 'let assumeRolePrincipal: iam.IPrincipal;',
+                    indent + 'if (!props.switchRoleName || props.switchRoleName === \'DummyRole\') {',
+                    indent + '  assumeRolePrincipal = new iam.AccountRootPrincipal();',
+                    indent + '} else {',
+                    indent + '  assumeRolePrincipal = new iam.ArnPrincipal(',
+                    indent + '    `arn:aws:iam::${awsAccount}:role/aws-reserved/sso.amazonaws.com/${awsRegion}/${props.switchRoleName}`',
+                    indent + '  ).withConditions({',
+                    indent + '    StringLike: {',
+                    indent + '      \'aws:userid\': props.idcUserNames.map((user) => `*:${user}`),',
+                    indent + '    },',
+                    indent + '  });',
+                    indent + '}',
+                  ];
+
+                  lines.splice(startIdx, endIdx - startIdx + 1, ...replacement);
+                  switchContent = lines.join('\n');
                   fs.writeFileSync(switchRolePath, switchContent);
-                  console.log('Fixed switch-role-stack.ts for non-SSO environments');
+                  console.log('Fixed switch-role-stack.ts: replaced lines', startIdx, 'to', endIdx);
                   EOF
 
                   node fix-switch-role.js
